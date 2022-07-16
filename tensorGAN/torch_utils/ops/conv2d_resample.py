@@ -215,7 +215,7 @@ def conv1d_resample(x, w, f=None, up=1, padding=0, groups=1, flip_weight=True, f
             w = w.transpose(1, 2)
             w = w.reshape(groups * in_channels_per_group, out_channels // groups, kw)
 
-        f =  f.repeat(out_channels, out_channels // groups, f.ndim)
+        f = f.repeat(out_channels, out_channels // groups, f.ndim) * up
 
         #x = _conv1d_wrapper(x=x, w=w, stride=2, padding=1, groups=groups, transpose=True, flip_weight=(not flip_weight))
         assert w.shape[2] == 4

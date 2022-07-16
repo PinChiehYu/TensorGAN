@@ -23,18 +23,18 @@ from training.volumetric_rendering import math_utils
 def sample_from_vectors(vector_features, coordinates, mode='bilinear', padding_mode='zeros', box_warp=None):
     assert padding_mode == 'zeros'
 
-    vector_features = vector_features.permute(1, 0, 2, 3).unsqueeze(-1) # n_vectors, N, Channel, Width, 1
+    vector_features = vector_features.permute(1, 0, 2, 3).unsqueeze(-1) # n_vectors, Batch, Channel, Width, 1
 
-    coordinates = (2/box_warp) * coordinates # TODO: add specific box bounds
+    coordinates = (2/box_warp) * coordinates # TODO: add specific box bounds # Batch, n_pos, xyz
     
-    coordinate_line = torch.stack((coordinates[..., 0], coordinates[..., 1], coordinates[..., 2])) # xyz, N, M
-    coordinate_line = torch.stack((coordinate_line, torch.zeros_like(coordinate_line)), dim=-1).unsqueeze(-2)#.detach().view(3, -1, 1, 2) # xyz, N, M, 1, 2
+    coordinate_line = torch.stack((coordinates[..., 0], coordinates[..., 1], coordinates[..., 2])) # xyz, Batch, n_pos
+    coordinate_line = torch.stack((torch.zeros_like(coordinate_line), coordinate_line), dim=-1).unsqueeze(-2).detach() # xyz, Batch, n_pos, 1, 2
 
-    output_features = torch.nn.functional.grid_sample(vector_features[0], coordinate_line[0], mode=mode, align_corners=True) # N, Channel, M, 1
+    output_features = torch.nn.functional.grid_sample(vector_features[0], coordinate_line[0], mode=mode, align_corners=True) # Batch, Channel, M, 1
     output_features = output_features * torch.nn.functional.grid_sample(vector_features[1], coordinate_line[1], mode=mode, align_corners=True)
     output_features = output_features * torch.nn.functional.grid_sample(vector_features[2], coordinate_line[2], mode=mode, align_corners=True)
     
-    return output_features.squeeze(-1).permute(0, 2, 1) #N, n_vectors, M, Channel
+    return output_features.squeeze(-1).permute(0, 2, 1) #Batch, n_vectors, M, Channel
 
 class ImportanceRenderer(torch.nn.Module):
     def __init__(self):

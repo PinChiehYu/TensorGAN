@@ -25,11 +25,12 @@ class CPGenerator(torch.nn.Module):
         self.w_dim=w_dim
         self.img_resolution=img_resolution
         self.img_channels=img_channels
+        self.feature_dim = 64
         self.renderer = ImportanceRenderer()
         self.ray_sampler = RaySampler()
-        self.backbone = tensoRFbackbone(z_dim, c_dim, w_dim, img_resolution=256, img_channels=32*3, mapping_kwargs=mapping_kwargs, **synthesis_kwargs)
-        self.superresolution = dnnlib.util.construct_class_by_name(class_name=rendering_kwargs['superresolution_module'], channels=32, img_resolution=img_resolution, sr_num_fp16_res=sr_num_fp16_res, sr_antialias=rendering_kwargs['sr_antialias'], **sr_kwargs)
-        self.decoder = OSGDecoder(32, {'decoder_lr_mul': rendering_kwargs.get('decoder_lr_mul', 1), 'decoder_output_dim': 32})
+        self.backbone = tensoRFbackbone(z_dim, c_dim, w_dim, img_resolution=256, img_channels=self.feature_dim*3, mapping_kwargs=mapping_kwargs, **synthesis_kwargs)
+        self.superresolution = dnnlib.util.construct_class_by_name(class_name=rendering_kwargs['superresolution_module'], channels=self.feature_dim, img_resolution=img_resolution, sr_num_fp16_res=sr_num_fp16_res, sr_antialias=rendering_kwargs['sr_antialias'], **sr_kwargs)
+        self.decoder = OSGDecoder(self.feature_dim, {'decoder_lr_mul': rendering_kwargs.get('decoder_lr_mul', 1), 'decoder_output_dim': self.feature_dim})
         self.neural_rendering_resolution = 64
         self.rendering_kwargs = rendering_kwargs
     
@@ -61,8 +62,8 @@ class CPGenerator(torch.nn.Module):
         if cache_backbone:
             self._last_vectors = vectors
 
-        # Reshape output into three 32-channel vectors
-        vectors = vectors.view(len(vectors), 3, 32, vectors.shape[-1])
+        # Reshape output into three feature_dim-channel vectors
+        vectors = vectors.view(len(vectors), 3, self.feature_dim, vectors.shape[-1])
 
         # Perform volume rendering
         feature_samples, depth_samples, weights_samples = self.renderer(vectors, self.decoder, ray_origins, ray_directions, self.rendering_kwargs) # channels last
@@ -82,13 +83,13 @@ class CPGenerator(torch.nn.Module):
         # Compute RGB features, density for arbitrary 3D coordinates. Mostly used for extracting shapes. 
         ws = self.mapping(z, c, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff, update_emas=update_emas)
         vectors = self.backbone.synthesis(ws, update_emas=update_emas, **synthesis_kwargs)
-        vectors = vectors.view(len(vectors), 3, 32, vectors.shape[-1])
+        vectors = vectors.view(len(vectors), 3, self.feature_dim, vectors.shape[-1])
         return self.renderer.run_model(vectors, self.decoder, coordinates, directions, self.rendering_kwargs)
 
     def sample_mixed(self, coordinates, directions, ws, truncation_psi=1, truncation_cutoff=None, update_emas=False, **synthesis_kwargs):
         # Same as sample, but expects latent vectors 'ws' instead of Gaussian noise 'z'
         vectors = self.backbone.synthesis(ws, update_emas = update_emas, **synthesis_kwargs)
-        vectors = vectors.view(len(vectors), 3, 32, vectors.shape[-1])
+        vectors = vectors.view(len(vectors), 3, self.feature_dim, vectors.shape[-1])
         return self.renderer.run_model(vectors, self.decoder, coordinates, directions, self.rendering_kwargs)
 
     def forward(self, z, c, truncation_psi=1, truncation_cutoff=None, neural_rendering_resolution=None, update_emas=False, cache_backbone=False, use_cached_backbone=False, **synthesis_kwargs):
