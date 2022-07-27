@@ -112,6 +112,7 @@ class OSGDecoder(torch.nn.Module):
         )
         
     def forward(self, sampled_features, ray_directions):
+        sampled_features = torch.prod(sampled_features, 1)
         x = sampled_features
 
         N, M, Channel = x.shape

@@ -145,24 +145,8 @@ def conv2d_resample(x, w, f=None, up=1, down=1, padding=0, groups=1, flip_weight
 
 #----------------------------------------------------------------------------
 
-def _conv1d_wrapper(x, w, stride=1, padding=0, groups=1, transpose=False, flip_weight=True):
-    """Wrapper for the underlying `conv1d()` and `conv_transpose1d()` implementations.
-    """
-    _out_channels, _in_channels_per_group, kw = _get_weight_shape(w)
-
-    # Flip weight if requested.
-    # Note: conv1d() actually performs correlation (flip_weight=True) not convolution (flip_weight=False).
-    if not flip_weight and kw > 1:
-        w = w.flip(2)
-
-    # Execute using conv2d_gradfix.
-    op = torch.nn.functional.conv_transpose1d if transpose else torch.nn.functional.conv1d
-    return op(x, w, stride=stride, padding=padding, groups=groups)
-
-#----------------------------------------------------------------------------
-
 @misc.profiled_function
-def conv1d_resample(x, w, f=None, up=1, padding=0, groups=1, flip_weight=True, flip_filter=False):
+def conv1d_resample(x, w, f=None, up=1, groups=1, flip_weight=True):
     r"""1D convolution with optional upsampling.
 
     Padding is performed only once at the beginning, not between the operations.
@@ -172,15 +156,8 @@ def conv1d_resample(x, w, f=None, up=1, padding=0, groups=1, flip_weight=True, f
                         `[batch_size, in_channels, in_width]`.
         w:              Weight tensor of shape
                         `[out_channels, in_channels//groups, kernel_width]`.
-        f:              Low-pass filter for up/downsampling. Must be prepared beforehand by
-                        calling upfirdn2d.setup_filter(). None = identity (default).
         up:             Integer upsampling factor (default: 1).
-        padding:        Padding with respect to the upsampled image. Can be a single number
-                        or a list/tuple `[x, y]` or `[x_before, x_after, y_before, y_after]`
-                        (default: 0).
         groups:         Split input channels into N groups (default: 1).
-        flip_weight:    False = convolution, True = correlation (default: True).
-        flip_filter:    False = convolution, True = correlation (default: False).
 
     Returns:
         Tensor of the shape `[batch_size, num_channels, out_height, out_width]`.
@@ -188,24 +165,16 @@ def conv1d_resample(x, w, f=None, up=1, padding=0, groups=1, flip_weight=True, f
     # Validate arguments.
     assert isinstance(x, torch.Tensor) and (x.ndim == 3)
     assert isinstance(w, torch.Tensor) and (w.ndim == 3) and (w.dtype == x.dtype)
-    assert f is None or (isinstance(f, torch.Tensor) and f.ndim in [1, 2] and f.dtype == torch.float32)
     assert isinstance(up, int) and (up >= 1)
     assert isinstance(groups, int) and (groups >= 1)
     out_channels, in_channels_per_group, kw = _get_weight_shape(w)
-    fw = f.shape[0] if f is not None else 1
-    px0, px1, _, _ = _parse_padding(padding)
-
-    # Adjust padding to account for up/downsampling.
-    if up > 1:
-        px0 += (fw + up - 1) // 2
-        px1 += (fw - up) // 2
 
     # Fast path: 1x1 convolution with upsampling only => convolve first, then upsample.
     if kw == 1 and up > 1:
-        x = _conv1d_wrapper(x=x, w=w, groups=groups, flip_weight=flip_weight)
+        x = torch.nn.functional.conv1d(input=x, weight=w, padding='same', groups=groups)
         x = torch.nn.functional.interpolate(x, scale_factor=up, mode="linear")
         return x
-
+    
     # Fast path: upsampling with optional downsampling => use transpose strided convolution.
     if up > 1:
         if groups == 1:
@@ -214,24 +183,23 @@ def conv1d_resample(x, w, f=None, up=1, padding=0, groups=1, flip_weight=True, f
             w = w.reshape(groups, out_channels // groups, in_channels_per_group, kw)
             w = w.transpose(1, 2)
             w = w.reshape(groups * in_channels_per_group, out_channels // groups, kw)
+        
+        w = w.flip([2])
 
-        f = f.repeat(out_channels, out_channels // groups, f.ndim) * up
+        x = torch.nn.functional.conv_transpose1d(input=x, weight=w, stride=up, groups=groups)
 
-        #x = _conv1d_wrapper(x=x, w=w, stride=2, padding=1, groups=groups, transpose=True, flip_weight=(not flip_weight))
-        assert w.shape[2] == 4
-        x = torch.nn.functional.conv_transpose1d(input=x, weight=w, stride=2, padding=1, groups=groups)
-        x = torch.nn.functional.conv1d(input=x, weight=f, padding='same', groups=groups)
+        f = f.to(x.dtype)
+        f = f[numpy.newaxis, numpy.newaxis].repeat([x.shape[1], 1] + [1] * f.ndim)
+        x = torch.nn.functional.conv1d(input=x, weight=f, padding=1, groups=x.shape[1])
 
         return x
 
     # Fast path: no up/downsampling, padding supported by the underlying implementation => use plain conv2d.
     if up == 1:
-        if px0 == px1 and px0 >= 0:
-            return _conv1d_wrapper(x=x, w=w, padding=px0, groups=groups, flip_weight=flip_weight)
+        x = torch.nn.functional.conv1d(input=x, weight=w, padding=kw//2, groups=groups)
+        return x
 
-    # Fallback: Generic reference implementation.
-    x = upfirdn2d.upfirdn2d(x=x, f=(f if up > 1 else None), up=up, padding=[px0,px1], gain=up**2, flip_filter=flip_filter)
-    x = _conv1d_wrapper(x=x, w=w, groups=groups, flip_weight=flip_weight)
+    print(f'conv1d_resample fail to match any mode!')
     return x
 
 #----------------------------------------------------------------------------
