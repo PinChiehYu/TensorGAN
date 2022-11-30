@@ -18,7 +18,7 @@ dir_path = os.path.dirname(os.path.realpath(__file__))
 #--------------------------------------------------------------------------------------------------------#
 
 # Download wilds
-cmd = "python download_ffhq.py --wilds"
+cmd = "python3 download_ffhq.py --wilds --pydrive --cmd_auth"
 subprocess.run([cmd], shell=True, check=True)
 
 #--------------------------------------------------------------------------------------------------------#

@@ -25,7 +25,7 @@ class CPGenerator(torch.nn.Module):
         self.w_dim=w_dim
         self.img_resolution=img_resolution
         self.img_channels=img_channels
-        self.feature_dim = 64
+        self.feature_dim = 32
         self.renderer = ImportanceRenderer()
         self.ray_sampler = RaySampler()
         self.backbone = tensoRFbackbone(z_dim, c_dim, w_dim, img_resolution=256, img_channels=self.feature_dim*3, mapping_kwargs=mapping_kwargs, **synthesis_kwargs)
@@ -113,6 +113,7 @@ class OSGDecoder(torch.nn.Module):
         
     def forward(self, sampled_features, ray_directions):
         sampled_features = torch.prod(sampled_features, 1)
+        #sampled_features = torch.cat((sampled_features[:,0,:,:], sampled_features[:,1,:,:], sampled_features[:,2,:,:]), -1)
         x = sampled_features
 
         N, M, Channel = x.shape

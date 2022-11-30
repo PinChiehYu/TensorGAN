@@ -21,6 +21,8 @@ import PIL.Image
 import torch
 from tqdm import tqdm
 import mrcfile
+import timeit
+import scipy.interpolate
 
 
 import legacy
@@ -114,6 +116,140 @@ def create_samples(N=256, voxel_origin=[0, 0, 0], cube_length=2.0):
 @click.option('--fov-deg', help='Field of View of camera in degrees', type=int, required=False, metavar='float', default=18.837, show_default=True)
 @click.option('--shape-format', help='Shape Format', type=click.Choice(['.mrc', '.ply']), default='.mrc')
 @click.option('--reload_modules', help='Overload persistent modules?', type=bool, required=False, metavar='BOOL', default=False, show_default=True)
+@click.option('--length', type=int, help='Length of interpolation')
+
+def gen_raw_images(
+    network_pkl: str,
+    seeds: List[int],
+    length: int,
+    truncation_psi: float,
+    truncation_cutoff: int,
+    outdir: str,
+    shapes: bool,
+    shape_res: int,
+    fov_deg: float,
+    shape_format: str,
+    class_idx: Optional[int],
+    reload_modules: bool,
+):
+    """Generate images using pretrained network pickle.
+
+    Examples:
+
+    \b
+    # Generate an image using pre-trained FFHQ model.
+    python gen_samples.py --outdir=output --trunc=0.7 --seeds=0-5 --shapes=True\\
+        --network=ffhq-rebalanced-128.pkl
+    """
+
+    print('Loading networks from "%s"...' % network_pkl)
+    device = torch.device('cuda')
+    with dnnlib.util.open_url(network_pkl) as f:
+        G = legacy.load_network_pkl(f)['G_ema'].to(device) # type: ignore
+
+    os.makedirs(outdir, exist_ok=True)
+    
+    intrinsics = FOV_to_intrinsics(fov_deg, device=device)
+    
+    # Generate images.
+    for seed_idx, seed in enumerate(seeds):
+        print('Generating image for seed %d (%d/%d) ...' % (seed, seed_idx, len(seeds)))
+        z = torch.from_numpy(np.random.RandomState(seed).randn(1, G.z_dim)).to(device)
+
+        cam_pivot = torch.tensor(G.rendering_kwargs.get('avg_camera_pivot', [0, 0, 0]), device=device)
+        cam_radius = G.rendering_kwargs.get('avg_camera_radius', 2.7)
+        cam2world_pose = LookAtPoseSampler.sample(np.pi/2 + 0, np.pi/2 + -0.2, cam_pivot, radius=cam_radius, device=device)
+        conditioning_cam2world_pose = LookAtPoseSampler.sample(np.pi/2, np.pi/2, cam_pivot, radius=cam_radius, device=device)
+        camera_params = torch.cat([cam2world_pose.reshape(-1, 16), intrinsics.reshape(-1, 9)], 1)
+        conditioning_params = torch.cat([conditioning_cam2world_pose.reshape(-1, 16), intrinsics.reshape(-1, 9)], 1)
+
+        ws = G.mapping(z, conditioning_params, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff)
+        output = G.synthesis(ws, camera_params)
+        img = output['image']
+        img_raw = output['image_raw']
+
+        img = (img.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0, 255).to(torch.uint8)
+        PIL.Image.fromarray(img[0].cpu().numpy(), 'RGB').save(f'{outdir}/seed{seed:04d}.png')
+        
+        img_raw = (img_raw.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0, 255).to(torch.uint8)
+        PIL.Image.fromarray(img_raw[0].cpu().numpy(), 'RGB').save(f'{outdir}/seed{seed:04d}_raw.png')
+
+def interpolate_images(
+    network_pkl: str,
+    seeds: List[int],
+    length: int,
+    truncation_psi: float,
+    truncation_cutoff: int,
+    outdir: str,
+    shapes: bool,
+    shape_res: int,
+    fov_deg: float,
+    shape_format: str,
+    class_idx: Optional[int],
+    reload_modules: bool,
+):
+    """Generate images using pretrained network pickle.
+
+    Examples:
+
+    \b
+    # Generate an image using pre-trained FFHQ model.
+    python gen_samples.py --outdir=output --trunc=0.7 --seeds=0-5 --shapes=True\\
+        --network=ffhq-rebalanced-128.pkl
+    """
+
+    print('Loading networks from "%s"...' % network_pkl)
+    device = torch.device('cuda')
+    with dnnlib.util.open_url(network_pkl) as f:
+        G = legacy.load_network_pkl(f)['G_ema'].to(device) # type: ignore
+
+    os.makedirs(outdir, exist_ok=True)
+    
+    if len(seeds) != 2:
+        print("Only support two seeds interpolation!")
+        return
+
+    cam2world_pose = LookAtPoseSampler.sample(3.14/2, 3.14/2, torch.tensor([0, 0, 0.2], device=device), radius=2.7, device=device)
+    intrinsics = FOV_to_intrinsics(fov_deg, device=device)
+    
+    #
+    zs = torch.from_numpy(np.stack([np.random.RandomState(seed).randn(G.z_dim) for seed in seeds])).to(device)
+    cam_pivot = torch.tensor(G.rendering_kwargs.get('avg_camera_pivot', [0, 0, 0]), device=device)
+    cam_radius = G.rendering_kwargs.get('avg_camera_radius', 2.7)
+    cam2world_pose = LookAtPoseSampler.sample(np.pi/2, np.pi/2 + -0.2, cam_pivot, radius=cam_radius, device=device)
+    conditioning_cam2world_pose = LookAtPoseSampler.sample(np.pi/2, np.pi/2, cam_pivot, radius=cam_radius, device=device)
+    camera_params = torch.cat([cam2world_pose.reshape(-1, 16), intrinsics.reshape(-1, 9)], 1)
+    conditioning_params = torch.cat([conditioning_cam2world_pose.reshape(-1, 16), intrinsics.reshape(-1, 9)], 1)
+    c = conditioning_params.repeat(len(zs), 1)
+    ws = G.mapping(z=zs, c=c, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff)
+    _ = G.synthesis(ws[:1], c[:1]) # warm up
+    #
+
+    # Generate images.
+
+    imgs = []
+    for sp in np.linspace(0.0, 1.0, num=length):
+        w = ws[0] * (1-sp) + ws[1] * sp
+        img = G.synthesis(w.unsqueeze(0), camera_params, noise_mode='const')['image']
+
+        img = (img.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0, 255).to(torch.uint8)
+        imgs.append(img)
+
+    img = torch.cat(imgs, dim=2)
+    PIL.Image.fromarray(img[0].cpu().numpy(), 'RGB').save(f'{outdir}/seed-{seeds}.png')
+
+@click.command()
+@click.option('--network', 'network_pkl', help='Network pickle filename', required=True)
+@click.option('--seeds', type=parse_range, help='List of random seeds (e.g., \'0,1,4-6\')', required=True)
+@click.option('--trunc', 'truncation_psi', type=float, help='Truncation psi', default=1, show_default=True)
+@click.option('--trunc-cutoff', 'truncation_cutoff', type=int, help='Truncation cutoff', default=14, show_default=True)
+@click.option('--class', 'class_idx', type=int, help='Class label (unconditional if not specified)')
+@click.option('--outdir', help='Where to save the output images', type=str, required=True, metavar='DIR')
+@click.option('--shapes', help='Export shapes as .mrc files viewable in ChimeraX', type=bool, required=False, metavar='BOOL', default=False, show_default=True)
+@click.option('--shape-res', help='', type=int, required=False, metavar='int', default=512, show_default=True)
+@click.option('--fov-deg', help='Field of View of camera in degrees', type=int, required=False, metavar='float', default=18.837, show_default=True)
+@click.option('--shape-format', help='Shape Format', type=click.Choice(['.mrc', '.ply']), default='.mrc')
+@click.option('--reload_modules', help='Overload persistent modules?', type=bool, required=False, metavar='BOOL', default=False, show_default=True)
 def generate_images(
     network_pkl: str,
     seeds: List[int],
@@ -163,7 +299,7 @@ def generate_images(
 
         imgs = []
         angle_p = -0.2
-        for angle_y, angle_p in [(.4, angle_p), (0, angle_p), (-.4, angle_p)]:
+        for angle_y, angle_p in [(.6, angle_p), (.4, angle_p), (.2, angle_p), (0, angle_p), (-.2, angle_p), (-.4, angle_p), (-.6, angle_p)]:
             cam_pivot = torch.tensor(G.rendering_kwargs.get('avg_camera_pivot', [0, 0, 0]), device=device)
             cam_radius = G.rendering_kwargs.get('avg_camera_radius', 2.7)
             cam2world_pose = LookAtPoseSampler.sample(np.pi/2 + angle_y, np.pi/2 + angle_p, cam_pivot, radius=cam_radius, device=device)
@@ -225,6 +361,8 @@ def generate_images(
 #----------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    #gen_raw_images()
+    #interpolate_images()
     generate_images() # pylint: disable=no-value-for-parameter
 
 #----------------------------------------------------------------------------

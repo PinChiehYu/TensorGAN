@@ -30,8 +30,6 @@ from metrics import metric_main
 from camera_utils import LookAtPoseSampler
 from training.crosssection_utils import sample_cross_section
 
-DEBUG = False
-
 #----------------------------------------------------------------------------
 
 def setup_snapshot_image_grid(training_set, random_seed=0):
@@ -279,28 +277,12 @@ def training_loop(
             if phase.start_event is not None:
                 phase.start_event.record(torch.cuda.current_stream(device))
 
-            if DEBUG:
-                G_origin = []
-                for name, param in G.named_parameters():
-                    G_origin.append((name, param.clone()))
-
             # Accumulate gradients.
             phase.opt.zero_grad(set_to_none=True)
             phase.module.requires_grad_(True)
             for real_img, real_c, gen_z, gen_c in zip(phase_real_img, phase_real_c, phase_gen_z, phase_gen_c):
                 loss.accumulate_gradients(phase=phase.name, real_img=real_img, real_c=real_c, gen_z=gen_z, gen_c=gen_c, gain=phase.interval, cur_nimg=cur_nimg)
             phase.module.requires_grad_(False)
-
-            if DEBUG:
-                G_grad = []
-                for name, param in G.named_parameters():
-                    G_grad.append((name, param.grad))
-            
-                if phase.name[0] == 'G':
-                    print(f'phase: {phase.name}')
-                    for tp in G_grad:
-                        print(f'name: {tp[0]}')
-                        print(f'{tp[1]}')
 
             # Update weights.
             with torch.autograd.profiler.record_function(phase.name + '_opt'):
@@ -315,16 +297,6 @@ def training_loop(
                     for param, grad in zip(params, grads):
                         param.grad = grad.reshape(param.shape)
                 phase.opt.step()
-            
-            if DEBUG:
-                G_after = []
-                for name, param in G.named_parameters():
-                    G_after.append((name, param.clone()))
-
-                if phase.name[0] == 'G':
-                    print(f'phase: {phase.name}')
-                    for tp_b, tp_a in zip(G_origin, G_after):
-                        print(f'name: {tp_b[0] :<45} => { "same" if torch.equal(tp_b[1].data, tp_a[1].data) else "not same" :<10}')
 
             # Phase done.
             if phase.end_event is not None:
@@ -422,7 +394,7 @@ def training_loop(
         # Save network snapshot.
         snapshot_pkl = None
         snapshot_data = None
-        if (network_snapshot_ticks is not None) and (done or cur_tick % network_snapshot_ticks == 0) and not DEBUG:
+        if (network_snapshot_ticks is not None) and (done or cur_tick % network_snapshot_ticks == 0):
             snapshot_data = dict(training_set_kwargs=dict(training_set_kwargs))
             for name, module in [('G', G), ('D', D), ('G_ema', G_ema), ('augment_pipe', augment_pipe)]:
                 if module is not None:

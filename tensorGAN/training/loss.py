@@ -291,7 +291,7 @@ class StyleGAN2Loss(Loss):
 
 #----------------------------------------------------------------------------
 
-class tensorGAN2Loss(Loss):
+class tensorGANLoss(Loss):
     def __init__(self, device, G, D, augment_pipe=None, r1_gamma=10, style_mixing_prob=0, pl_weight=0, pl_batch_shrink=2, pl_decay=0.01, pl_no_weight_grad=False, blur_init_sigma=0, blur_fade_kimg=0, r1_gamma_init=0, r1_gamma_fade_kimg=0, neural_rendering_resolution_initial=64, neural_rendering_resolution_final=None, neural_rendering_resolution_fade_kimg=0, gpc_reg_fade_kimg=1000, gpc_reg_prob=None, dual_discrimination=False, filter_mode='antialiased'):
         super().__init__()
         self.device             = device
@@ -415,7 +415,17 @@ class tensorGAN2Loss(Loss):
             sigma_perturbed = sigma[:, sigma.shape[1]//2:]
 
             TVloss = torch.nn.functional.l1_loss(sigma_initial, sigma_perturbed) * self.G.rendering_kwargs['density_reg']
-            TVloss.mul(gain).backward()
+            
+            ######
+            gen_img, _gen_ws = self.run_G(gen_z, gen_c, swapping_prob=swapping_prob, neural_rendering_resolution=neural_rendering_resolution)
+            depth_img = gen_img['image_depth']
+            depth_avg = depth_img.flatten(1).mean(1)
+            depth_var = ((depth_img - depth_avg.view(-1, 1, 1, 1))**2).flatten(1)
+            Depthloss = depth_var.mean() * self.G.rendering_kwargs['density_reg'] * 5
+            
+            (TVloss + Depthloss).mul(gain).backward()
+
+            #TVloss.mul(gain).backward()
 
         # Alternative density regularization
         if phase in ['Greg', 'Gboth'] and self.G.rendering_kwargs.get('density_reg', 0) > 0 and self.G.rendering_kwargs['reg_type'] == 'monotonic-detach':

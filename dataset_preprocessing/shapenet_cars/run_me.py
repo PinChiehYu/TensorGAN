@@ -36,6 +36,6 @@ if __name__ == '__main__':
         subprocess.run([cmd], shell=True)
 
         print("Creating dataset zip...")
-        cmd = f"python {os.path.join(dir_path, '../../eg3d', 'dataset_tool.py')}"
+        cmd = f"python {os.path.join(dir_path, '../../tensorGAN', 'dataset_tool.py')}"
         cmd += f" --source {extracted_data_path} --dest {output_dataset_name} --resolution 128x128"
         subprocess.run([cmd], shell=True)
